@@ -1,0 +1,10 @@
+{
+    "prefix": "!", // prefix for the bot
+    "token": "", // Discord Bot API token
+    "mongodbase": "mongodb://localhost:27017", // MongoDB database location
+    "currentdb": "deltabot", // The MongoDB database
+    "mainSourceURL": "", // URL to AltStore Stable Repository
+    "alphaSourceURL": "", // URL to AltStore Alpha Repository
+    "translateAPI": "", // Yandex API token - https://translate.yandex.com/developers/keys
+    "ownerID": "", // Discord user (your) snowflake
+}
