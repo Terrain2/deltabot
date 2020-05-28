@@ -1,224 +1,159 @@
-const fs = require('fs');
-const Discord = require('discord.js');
-let { prefix } = require('./config.json');
-const { mainSourceURL, alphaSourceURL, ownerID } = require('./config.json');
-const package = require('./package.json');
-const MongoClient = require('mongodb').MongoClient;
 const fetch = require('node-fetch');
-const { token, mongodbase, currentdb } = require('./config.json');
-require('log-timestamp')(function () { return new Date().toLocaleString() + ' "%s"' });
+const Discord = require('discord.js'); const fs = require('fs');
+const { MongoClient } = require('mongodb');
+const { prefix,
+    mainSourceURL, alphaSourceURL, ownerID,
+    token, mongodbase, currentdb } = require('./config.json');
+const package = require('./package.json');
+require('log-timestamp')(function () { return new Date().toLocaleString() + ' "%s"'; });
 const client = new Discord.Client();
 client.commands = new Discord.Collection();
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
 const cooldowns = new Discord.Collection();
-let announceChannels = [];
-let betaannounceChannels = [];
 const settings = { method: "Get" };
-let altstoreApps, dbInstance, welcomechannelID, modRoles, logChannelID, oldAltstoreVersion, oldDeltaVersion, oldAltstoreBetaVersion, oldAltstoreAlphaVersion, oldDeltaAlphaVersion, oldDeltaBetaVersion, appsList, newAltstoreData, newDeltaData, newAltstoreVersion, newDeltaVersion, newAltstoreBetaVersion, newDeltaBetaVersion;
+let appsList = Array(5);
+let dbInstance, welcomechannelID, modRoles, logChannelID,
+    oldAltstoreVersion, oldAltstoreBetaVersion, oldAltstoreAlphaVersion,
+    oldDeltaVersion, oldDeltaAlphaVersion, oldDeltaBetaVersion,
+    announceChannels, betaAnnounceChannels;
 const consoles = [`DS games on Delta`, `N64 games on Delta`, `GBA games on Delta`, `GBC games on Delta`, `SNES games on Delta`, `NES games on Delta`];
+const versionsQuery = { name: "versions" };
 
-function updateVersions() {
-    fetch(mainSourceURL, settings)
-        .then(res => res.json())
-        .then((json) => {
+function updateEmbed(color, app, icon, oldversion, newversion, whatsnew) {
+    return new Discord.MessageEmbed()
+        .setColor(color)
+        .setThumbnail(icon)
+        .setTitle(`New ${app} update!`)
+        .addField("Version:", `${oldversion} -> ${newversion}`, true)
+        .addField("What's new:", whatsnew.substring(0, 1024))
+        .setTimestamp()
+        .setFooter(package.name + ' v. ' + package.version);
+}
 
-            //sets activity to random Delta console
-            const randomActivity = consoles[Math.floor(Math.random() * consoles.length)];
-            client.user.setActivity(randomActivity + ` with ${client.users.cache.size} others!`, { type: 'PLAYING' });
+async function updateVersions() {
+    //sets activity to random Delta console
+    const randomActivity = consoles[Math.floor(Math.random() * consoles.length)];
+    client.user.setActivity(randomActivity + ` with ${client.users.cache.size} others!`, { type: 'PLAYING' });
 
-            // do something with JSON
-            altstoreApps = json;
-            for (var i = 0; i < altstoreApps['apps'].length; i++) {
-                // look for the entry with a matching `bundleID` value
-                if (altstoreApps['apps'][i].bundleIdentifier == "com.rileytestut.AltStore") {
-                    // we found AltStore
-                    newAltstoreData = altstoreApps['apps'][i];
-                } else if (altstoreApps['apps'][i].bundleIdentifier == "com.rileytestut.Delta") {
-                    // we found delta
-                    newDeltaData = altstoreApps['apps'][i];
-                } else if (altstoreApps['apps'][i].bundleIdentifier == "com.rileytestut.AltStore.Beta") {
-                    // we found altstore beta
-                    newAltstoreBetaData = altstoreApps['apps'][i];
-                } else if (altstoreApps['apps'][i].bundleIdentifier == "com.rileytestut.Delta.Beta") {
-                    // we found Delta beta
-                    newDeltaBetaData = altstoreApps['apps'][i];
-                }
+    // fetch stable/beta altstore repo
+    const res1 = await fetch(mainSourceURL);
+    const res2 = await fetch(alphaSourceURL);
+    const altstore = await res1.json();
+    const alphaAltstore = await res2.json();
+    if (!(Object.keys(altstore).includes('apps')
+        && typeof altstore.apps === 'object'
+        && altstore.apps instanceof Array)) throw "No apps array in altstore repo";
+    if (!(Object.keys(alphaAltstore).includes('apps')
+        && typeof alphaAltstore.apps === 'object'
+        && alphaAltstore.apps instanceof Array)) throw "No apps array in altstore alpha repo";
+
+    const newAltstore = altstore.apps.find(app => app.bundleIdentifier == "com.rileytestut.AltStore");
+    const newDelta = altstore.apps.find(app => app.bundleIdentifier == "com.rileytestut.Delta");
+
+    const newAltstoreBeta = altstore.apps.find(app => app.bundleIdentifier == "com.rileytestut.AltStore.Beta");
+    const newDeltaBeta = altstore.apps.find(app => app.bundleIdentifier == "com.rileytestut.Delta.Beta");
+
+    const newAltstoreAlpha = alphaAltstore.apps.find(app => app.bundleIdentifier == "com.rileytestut.AltStore.Alpha");
+    const newDeltaAlpha = alphaAltstore.apps.find(app => app.bundleIdentifier == "com.rileytestut.Delta.Alpha");
+
+    if (false // If statement only connects to the database and checks in depth for updates and sends messages *if there is at least one update* (false statement so the other lines are symmetrical)
+        || newAltstore.version !== oldAltstoreVersion
+        || newAltstoreBeta.version !== oldAltstoreBetaVersion
+        || newAltstoreAlpha.version !== oldAltstoreAlphaVersion
+        || newDelta.version !== oldDeltaVersion
+        || newDeltaBeta.version !== oldDeltaBetaVersion
+        || newDeltaAlpha.version !== oldDeltaAlphaVersion
+    ) {
+        MongoClient.connect(mongodbase, { useUnifiedTopology: true }, (err, db) => {
+            if (err) throw err;
+            dbInstance = db.db(currentdb);
+            newDelta.version = "1.0" //testing
+            // newAltstore.version = "1.0" //testing
+            // newAltstoreBeta.version = "4.0" //testing
+            // newDeltaBeta.version = "3.0" //testing
+
+            // AltStore
+            if (newAltstore.version !== oldAltstoreVersion) {
+                appsList[0] = newAltstore.version;
+                const newvalue = { $set: { apps: appsList } };
+                dbInstance.collection("data").updateOne(versionsQuery, newvalue, (err, res) => {
+                    if (err) throw err;
+                    const modEmbed = updateEmbed("#018084", "AltStore", newAltstore.iconURL, oldAltstoreVersion, newAltstore.version, newAltstore.versionDescription);
+                    for (const chan of announceChannels)
+                        chan.send(modEmbed);
+                });
             }
-            newAltstoreVersion = newAltstoreData['version'];
-            newDeltaVersion = newDeltaData['version'];
-            newAltstoreBetaVersion = newAltstoreBetaData['version'];
-            newDeltaBetaVersion = newDeltaBetaData['version'];
 
-            MongoClient.connect(mongodbase, { useUnifiedTopology: true }, function (err, db) {
-                if (err) throw err;
-                dbInstance = db.db(currentdb);
-                //newDeltaVersion = "1.0" //testing
-                //newAltstoreVersion = "1.0" //testing
-                //newAltstoreBetaVersion = "4.0" //testing
-                //newDeltaBetaVersion = "3.0" //testing
-
-                //AltStore
-                if (newAltstoreVersion != oldAltstoreVersion) {
-                    appsList[0] = newAltstoreVersion;
-                    var myquery = { name: "versions" };
-                    var newvalue = { $set: { apps: appsList } };
-                    dbInstance.collection("data").updateOne(myquery, newvalue, function (err, res) {
-                        if (err) throw err;
-                        updateVars();
-                        const modEmbed = new Discord.MessageEmbed()
-                            .setColor('#018084')
-                            .setThumbnail(newAltstoreData['iconURL'])
-                            .setTitle("New AltStore update!")
-                            .addField("Version:", `${oldAltstoreVersion} -> ${newAltstoreVersion}`, true)
-                            .addField("What's new:", newAltstoreData['versionDescription'].substring(0, 1024))
-                            .setTimestamp()
-                            .setFooter(package.name + ' v. ' + package.version);
-                        announceChannels.forEach(element => {
-                            element.send(modEmbed);
-                        });
-                    })
-                }
-                //AltStore Beta
-                if (newAltstoreBetaVersion != oldAltstoreBetaVersion) {
-                    appsList[2] = newAltstoreBetaVersion;
-                    var myquery = { name: "versions" };
-                    var newvalue = { $set: { apps: appsList } };
-                    dbInstance.collection("data").updateOne(myquery, newvalue, function (err, res) {
-                        if (err) throw err;
-                        updateVars();
-                        const modEmbed = new Discord.MessageEmbed()
-                            .setColor('#018084')
-                            .setThumbnail(newAltstoreBetaData['iconURL'])
-                            .setTitle("New AltStore Beta update!")
-                            .addField("Version:", `${oldAltstoreBetaVersion} -> ${newAltstoreBetaVersion}`, true)
-                            .addField("What's new:", newAltstoreBetaData['versionDescription'].substring(0, 1024))
-                            .setTimestamp()
-                            .setFooter(package.name + ' v. ' + package.version);
-                        betaannounceChannels.forEach(element => {
-                            element.send(modEmbed);
-                        });
-                    })
-                }
-                //Delta
-                if (newDeltaVersion != oldDeltaVersion) {
-                    appsList[1] = newDeltaVersion;
-                    var myquery = { name: "versions" };
-                    var newvalue = { $set: { apps: appsList } };
-                    dbInstance.collection("data").updateOne(myquery, newvalue, function (err, res) {
-                        if (err) throw err;
-                        updateVars();
-                        const modEmbed = new Discord.MessageEmbed()
-                            .setColor('#8A28F7')
-                            .setThumbnail(newDeltaData['iconURL'])
-                            .setTitle("New Delta update!")
-                            .addField("Version:", `${oldDeltaVersion} -> ${newDeltaVersion}`, true)
-                            .addField("What's new:", newDeltaData['versionDescription'].substring(0, 1024))
-                            .setTimestamp()
-                            .setFooter(package.name + ' v. ' + package.version);
-                        announceChannels.forEach(element => {
-                            element.send(modEmbed);
-                        });
-
-                    });
-                }
-                //Delta Beta
-                if (newDeltaBetaVersion != oldDeltaBetaVersion) {
-                    appsList[3] = newDeltaBetaVersion;
-                    var myquery = { name: "versions" };
-                    var newvalue = { $set: { apps: appsList } };
-                    dbInstance.collection("data").updateOne(myquery, newvalue, function (err, res) {
-                        if (err) throw err;
-                        updateVars();
-                        const modEmbed = new Discord.MessageEmbed()
-                            .setColor('#8A28F7')
-                            .setThumbnail(newDeltaBetaData['iconURL'])
-                            .setTitle("New Delta Beta update!")
-                            .addField("Version:", `${oldDeltaBetaVersion} -> ${newDeltaBetaVersion}`, true)
-                            .addField("What's new:", newDeltaBetaData['versionDescription'].substring(0, 1024))
-                            .setTimestamp()
-                            .setFooter(package.name + ' v. ' + package.version);
-                        betaannounceChannels.forEach(element => {
-                            element.send(modEmbed);
-                        });
-
-                    });
-                }
-            });
-        });
-
-    fetch(alphaSourceURL, settings)
-        .then(res => res.json())
-        .then((json) => {
-            var altstoreApps = json;
-            for (var i = 0; i < altstoreApps['apps'].length; i++) {
-                // look for the entry with a matching `bundleID` value
-                if (altstoreApps['apps'][i].bundleIdentifier == "com.rileytestut.AltStore.Alpha") {
-                    // we found AltStore alpha
-                    newAltstoreData = altstoreApps['apps'][i];
-                }
-                if (altstoreApps['apps'][i].bundleIdentifier == "com.rileytestut.Delta.Alpha") {
-                    // we found Delta alpha
-                    newDeltaData = altstoreApps['apps'][i];
-                }
+            // AltStore Beta
+            if (newAltstoreBeta.version !== oldAltstoreBetaVersion) {
+                appsList[2] = newAltstoreBeta.version;
+                const newvalue = { $set: { apps: appsList } };
+                dbInstance.collection("data").updateOne(versionsQuery, newvalue, (err, res) => {
+                    if (err) throw err;
+                    const modEmbed = updateEmbed("#018084", "AltStore Beta", newAltstoreBeta.iconURL, oldAltstoreBetaVersion, newAltstoreBeta.version, newAltstoreBeta.versionDescription);
+                    for (const chan of betaAnnounceChannels)
+                        chan.send(modEmbed);
+                });
             }
-            newAltstoreVersion = newAltstoreData['version'];
-            newDeltaVersion = newDeltaData['version'];
 
-            MongoClient.connect(mongodbase, { useUnifiedTopology: true }, function (err, db) {
-                if (err) throw err;
-                dbInstance = db.db(currentdb);
-                //AltStore Alpha
-                if (newAltstoreVersion != oldAltstoreAlphaVersion) {
-                    appsList[4] = newAltstoreVersion;
-                    var myquery = { name: "versions" };
-                    var newvalue = { $set: { apps: appsList } };
-                    dbInstance.collection("data").updateOne(myquery, newvalue, function (err, res) {
-                        if (err) throw err;
-                        updateVars();
-                        const modEmbed = new Discord.MessageEmbed()
-                            .setColor('#018084')
-                            .setThumbnail(newAltstoreData['iconURL'])
-                            .setTitle("New AltStore Alpha update!")
-                            .addField("Version:", `${oldAltstoreAlphaVersion} -> ${newAltstoreVersion}`, true)
-                            .addField("What's new:", newAltstoreData['versionDescription'])
-                            .addField("Add source:", alphaSourceURL)
-                            .setTimestamp()
-                            .setFooter(package.name + ' v. ' + package.version);
-                        betaannounceChannels.forEach(element => {
-                            element.send(modEmbed);
-                        });
-                    })
-                }
-                //Delta Alpha
-                if (newDeltaVersion != oldDeltaAlphaVersion) {
-                    appsList[5] = newDeltaVersion;
-                    var myquery = { name: "versions" };
-                    var newvalue = { $set: { apps: appsList } };
-                    dbInstance.collection("data").updateOne(myquery, newvalue, function (err, res) {
-                        if (err) throw err;
-                        updateVars();
-                        const modEmbed = new Discord.MessageEmbed()
-                            .setColor('#8A28F7')
-                            .setThumbnail(newDeltaData['iconURL'])
-                            .setTitle("New Delta Alpha update!")
-                            .addField("Version:", `${oldDeltaAlphaVersion} -> ${newDeltaVersion}`, true)
-                            .addField("What's new:", newDeltaData['versionDescription'])
-                            .addField("Add source:", alphaSourceURL)
-                            .setTimestamp()
-                            .setFooter(package.name + ' v. ' + package.version);
-                        betaannounceChannels.forEach(element => {
-                            element.send(modEmbed);
-                        });
+            // AltStore Alpha
+            if (newAltstoreAlpha.version !== oldAltstoreAlphaVersion) {
+                appsList[4] = newAltstoreAlpha.version;
+                const newvalue = { $set: { apps: appsList } };
+                dbInstance.collection("data").updateOne(versionsQuery, newvalue, (err, res) => {
+                    if (err) throw err;
+                    const modEmbed = updateEmbed("#018084", "AltStore Alpha", newAltstoreAlpha.iconURL, oldAltstoreAlphaVersion, newAltstoreAlpha.version, newAltstoreAlpha.versionDescription);
+                    for (const chan of betaAnnounceChannels)
+                        chan.send(modEmbed);
+                });
+            }
 
-                    });
-                }
-            });
+            // Delta
+            if (newDelta.version !== oldDeltaVersion) {
+                appsList[1] = newDelta.version;
+                const newvalue = { $set: { apps: appsList } };
+                dbInstance.collection("data").updateOne(versionsQuery, newvalue, function (err, res) {
+                    if (err) throw err;
+                    const modEmbed = updateEmbed("#8A28F7", "Delta", newDelta.iconURL, oldDeltaVersion, newDelta.version, newDelta.versionDescription);
+                    for (const chan of announceChannels)
+                        chan.send(modEmbed);
 
+                });
+            }
+
+            // Delta Beta
+            if (newDeltaBeta.version !== oldDeltaBetaVersion) {
+                appsList[3] = newDeltaBeta.version;
+                const newvalue = { $set: { apps: appsList } };
+                dbInstance.collection("data").updateOne(versionsQuery, newvalue, function (err, res) {
+                    if (err) throw err;
+                    const modEmbed = updateEmbed("#8A28F7", "Delta Beta", newDeltaBeta.iconURL, oldDeltaBetaVersion, newDeltaBeta.version, newDelta.versionDescription);
+                    for (const chan of betaAnnounceChannels)
+                        chan.send(modEmbed);
+
+                });
+            }
+
+            // Delta Alpha
+            if (newDeltaAlpha.version !== oldDeltaAlphaVersion) {
+                appsList[5] = newDeltaAlpha.version;
+                const newvalue = { $set: { apps: appsList } };
+                dbInstance.collection("data").updateOne(versionsQuery, newvalue, function (err, res) {
+                    if (err) throw err;
+                    const modEmbed = updateEmbed("#8A28F7", "Delta Alpha", newDeltaAlpha.iconURL, oldAltstoreAlphaVersion, newDeltaBeta.version, newDelta.versionDescription);
+                    for (const chan of betaAnnounceChannels)
+                        chan.send(modEmbed);
+
+                });
+            }
         });
+        updateVars();
+    }
 };
 function updateVars() {
-    MongoClient.connect(mongodbase, { useUnifiedTopology: true }, async function (err, db) {
-        if (err) throw err;
+    // Prevent errors on launch by awaiting the finish of this before initially using updateVersions()
+    return new Promise((resolve, reject) => MongoClient.connect(mongodbase, { useUnifiedTopology: true }, async function (err, db) {
+        if (err) return reject(err);
         dbInstance = db.db(currentdb);
         const dataItems = await dbInstance.collection('data').findOne({});
         appsList = dataItems.apps;
@@ -230,21 +165,37 @@ function updateVars() {
         oldAltstoreAlphaVersion = appsList[4];
         oldDeltaAlphaVersion = appsList[5];
         const items = await dbInstance.collection('config').findOne({});
-        prefix = items.prefix;
+        // prefix = items.prefix;
         welcomechannelID = items.welcomechannel;
         modRoles = items.modroles;
         logChannelID = items.logchannel;
-        var index = 0;
-        items.announcechannel.forEach(element => {
-            announceChannels[index] = client.channels.cache.get(element);
-            index++;
-        });
-        index = 0;
-        items.betaannouncechannel.forEach(element => {
-            betaannounceChannels[index] = client.channels.cache.get(element);
-            index++;
-        });
-    });
+        announceChannels = items.announcechannel.map(element => client.channels.cache.get(element));
+        betaAnnounceChannels = items.betaannouncechannel.map(element => client.channels.cache.get(element));
+        resolve();
+    }));
+}
+
+async function fillAppsList() {
+    const rawmain = await fetch(mainSourceURL);
+    const rawalpha = await fetch(alphaSourceURL);
+    const main = await rawmain.json()
+    const alpha = await rawalpha.json()
+    if (!(Object.keys(main).includes('apps')
+        && typeof main.apps === 'object'
+        && main.apps instanceof Array)) throw "No apps array in altstore repo";
+    if (!(Object.keys(alpha).includes('apps')
+        && typeof alpha.apps === 'object'
+        && alpha.apps instanceof Array)) throw "No apps array in altstore alpha repo";
+
+
+    appsList[0] = main.apps.find(app => app.bundleIdentifier == "com.rileytestut.AltStore");
+    appsList[1] = main.apps.find(app => app.bundleIdentifier == "com.rileytestut.Delta");
+
+    appsList[2] = main.apps.find(app => app.bundleIdentifier == "com.rileytestut.AltStore.Beta");
+    appsList[3] = main.apps.find(app => app.bundleIdentifier == "com.rileytestut.Delta.Beta");
+
+    appsList[4] = alpha.apps.find(app => app.bundleIdentifier == "com.rileytestut.Delta.Alpha");
+    appsList[5] = alpha.apps.find(app => app.bundleIdentifier == "com.rileytestut.AltStore.Alpha");
 }
 
 function exeCommand(command, message, args) {
@@ -266,9 +217,11 @@ for (const file of commandFiles) {
     client.commands.set(command.name, command);
 }
 
-client.once('ready', () => {
-    updateVars();
-    updateVersions();
+client.once('ready', async () => {
+    try {
+        await updateVars();
+        await fillAppsList();
+    } catch (e) { console.error(e); }
     setInterval(updateVersions, 60 * 1000);
     console.log('Ready!');
 });
@@ -314,19 +267,13 @@ client.on('message', message => {
         if (command.args && !args.length) {
             const commandhelp = client.commands.get("help");
             const argshelp = [command.name];
-            commandhelp.execute(message, argshelp)
+            commandhelp.execute(message, argshelp);
         } else {
+            let hasPerms = message.author.id === ownerID;
             if (command.needsmod) {
-                var isMod = false;
-                if (message.author.id == ownerID) {
-                    isMod = true;
-                }
-                modRoles.forEach(element => {
-                    if (message.member.roles.cache.has(element) || message.member.hasPermission(['ADMINISTRATOR'])) {
-                        isMod = true;
-                    }
-                    if (isMod) return;
-                });
+                hasPerms = hasPerms
+                    || message.member.hasPermission("ADMINISTRATOR")
+                    || modRoles.some(role => message.member.roles.cache.has(role));
                 if (!isMod) {
                     message.channel.send("You need to be mod to use this command.");
                     return;
@@ -334,14 +281,16 @@ client.on('message', message => {
                     exeCommand(command, message, args);
                 }
             } else if (command.needsadmin) {
-                if (message.member.hasPermission(['ADMINISTRATOR']) || message.author.id == ownerID) {
+                hasPerms = hasPerms
+                    || message.member.hasPermission("ADMINISTRATOR");
+                if (hasPerms) {
                     exeCommand(command, message, args);
                     return;
                 } else {
                     message.channel.send("You need to be admin to use this command.");
                 }
             } else if (command.needsowner) {
-                if (message.author.id == ownerID) {
+                if (hasPerms) {
                     exeCommand(command, message, args);
                     return;
                 } else {
@@ -361,13 +310,10 @@ client.on('message', message => {
 
 //Join message
 client.on('guildMemberAdd', member => {
-    // AltStore Discord
-    let channel;
-    if (member.guild.id == "625766896230334465") {
-        channel = member.guild.channels.cache.get(welcomechannelID);
-    } else if (member.guild.id == "625714187078860810") { //Delta Discord
-        channel = member.guild.channels.cache.get(welcomechannelID);
-    }
+    const channel = [
+        "625766896230334465", // AltStore Discord
+        "625714187078860810", // Delta Discord
+    ].includes(member.guild.id) ? channel = member.guild.channels.cache.get(welcomechannelID) : null;
     // Do nothing if the channel wasn't found on this server
     if (!channel) return;
 
@@ -375,7 +321,7 @@ client.on('guildMemberAdd', member => {
     channel.send(`Welcome to the server, ${member}! Please read the info below.`);
     const modEmbed = new Discord.MessageEmbed()
         .setColor('#32CD32')
-        .setTitle("Member Joined")
+        .setTitle("Member Joined");
     channel.send(modEmbed);
 });
 
@@ -391,9 +337,9 @@ client.on('messageDelete', message => {
         .addField("Message deleted:", message.content)
         .addField("Channel:", message.channel)
         .setTimestamp()
-        .setFooter(`Sender ID: ${message.author.id}`)
+        .setFooter(`Sender ID: ${message.author.id}`);
     logchannel.send(modEmbed);
-})
+});
 
 //edited message
 client.on('messageUpdate', function (oldMessage, newMessage) {
@@ -409,10 +355,10 @@ client.on('messageUpdate', function (oldMessage, newMessage) {
             .addField("Before:", oldMessage.content, true)
             .addField("After:", newMessage.content, true)
             .setTimestamp()
-            .setFooter(`Sender ID: ${newMessage.author.id}`)
+            .setFooter(`Sender ID: ${newMessage.author.id}`);
         logchannel.send(modEmbed);
     }
-})
+});
 
 //banned member
 client.on('guildBanAdd', async function (guild, user) {
@@ -426,9 +372,9 @@ client.on('guildBanAdd', async function (guild, user) {
         .addField("User banned:", user.tag, true)
         .addField("Reason:", banList.reason, true)
         .setTimestamp()
-        .setFooter(`User ID: ${user.id}`)
+        .setFooter(`User ID: ${user.id}`);
     logchannel.send(modEmbed);
-})
+});
 
 //leave log
 client.on('guildMemberRemove', member => {
@@ -444,7 +390,7 @@ client.on('guildMemberRemove', member => {
         .setAuthor(member.user.tag, member.user.avatarURL())
         .addField("Left at:", member.joinedAt.toDateString() + ", " + member.joinedAt.toLocaleTimeString('en-US'))
         .setTimestamp()
-        .setFooter(`User ID: ${member.user.id}`)
+        .setFooter(`User ID: ${member.user.id}`);
     logchannel.send(modEmbed);
 });
 
@@ -461,10 +407,10 @@ client.on('guildBanRemove', async function (guild, user) {
                 .addField("User unbanned:", user.tag, true)
                 .addField("Reason:", audit.entries.first().reason, true)
                 .setTimestamp()
-                .setFooter(`User ID: ${user.id}`)
+                .setFooter(`User ID: ${user.id}`);
             logchannel.send(modEmbed);
         });
-})
+});
 
 //deleted channel
 client.on('channelDelete', channel => {
@@ -480,9 +426,9 @@ client.on('channelDelete', channel => {
                 .addField("Channel:", channel.name, true)
                 .addField("Category:", channel.parent, true)
                 .addField("User:", audit.entries.first().executor, true)
-                .setTimestamp()
+                .setTimestamp();
             logchannel.send(modEmbed);
         });
-})
+});
 
 client.login(token);
